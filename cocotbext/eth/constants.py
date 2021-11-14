@@ -42,12 +42,12 @@ class XgmiiCtrl(enum.IntEnum):
     TERM   = 0xfd
     ERROR  = 0xfe
     SEQ_OS = 0x9c
-    RES0   = 0x1c
-    RES1   = 0x3c
-    RES2   = 0x7c
-    RES3   = 0xbc
-    RES4   = 0xdc
-    RES5   = 0xf7
+    RES_0  = 0x1c
+    RES_1  = 0x3c
+    RES_2  = 0x7c
+    RES_3  = 0xbc
+    RES_4  = 0xdc
+    RES_5  = 0xf7
     SIG_OS = 0x5c
 
 
@@ -93,3 +93,41 @@ class BaseRBlockType(enum.IntEnum):
     TERM_5   = 0xd2  # C7 C6    D4 D3 D2 D1 D0 BT
     TERM_6   = 0xe1  # C7    D5 D4 D3 D2 D1 D0 BT
     TERM_7   = 0xff  #    D6 D5 D4 D3 D2 D1 D0 BT
+
+
+xgmii_ctrl_to_baser_mapping = {
+    XgmiiCtrl.IDLE:   BaseRCtrl.IDLE,
+    XgmiiCtrl.LPI:    BaseRCtrl.LPI,
+    XgmiiCtrl.ERROR:  BaseRCtrl.ERROR,
+    XgmiiCtrl.RES_0:  BaseRCtrl.RES_0,
+    XgmiiCtrl.RES_1:  BaseRCtrl.RES_1,
+    XgmiiCtrl.RES_2:  BaseRCtrl.RES_2,
+    XgmiiCtrl.RES_3:  BaseRCtrl.RES_3,
+    XgmiiCtrl.RES_4:  BaseRCtrl.RES_4,
+    XgmiiCtrl.RES_5:  BaseRCtrl.RES_5,
+}
+
+
+baser_ctrl_to_xgmii_mapping = {
+    BaseRCtrl.IDLE:   XgmiiCtrl.IDLE,
+    BaseRCtrl.LPI:    XgmiiCtrl.LPI,
+    BaseRCtrl.ERROR:  XgmiiCtrl.ERROR,
+    BaseRCtrl.RES_0:  XgmiiCtrl.RES_0,
+    BaseRCtrl.RES_1:  XgmiiCtrl.RES_1,
+    BaseRCtrl.RES_2:  XgmiiCtrl.RES_2,
+    BaseRCtrl.RES_3:  XgmiiCtrl.RES_3,
+    BaseRCtrl.RES_4:  XgmiiCtrl.RES_4,
+    BaseRCtrl.RES_5:  XgmiiCtrl.RES_5,
+}
+
+
+block_type_term_lane_mapping = {
+    BaseRBlockType.TERM_0:  0,
+    BaseRBlockType.TERM_1:  1,
+    BaseRBlockType.TERM_2:  2,
+    BaseRBlockType.TERM_3:  3,
+    BaseRBlockType.TERM_4:  4,
+    BaseRBlockType.TERM_5:  5,
+    BaseRBlockType.TERM_6:  6,
+    BaseRBlockType.TERM_7:  7,
+}
