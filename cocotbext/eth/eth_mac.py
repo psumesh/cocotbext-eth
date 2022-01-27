@@ -262,9 +262,9 @@ class EthMacTx(Reset):
         else:
             self.log.info("Reset de-asserted")
             if self._run_cr is None:
-                self._run_cr = cocotb.fork(self._run())
+                self._run_cr = cocotb.start_soon(self._run())
             if self._run_ts_cr is None and self.ptp_ts:
-                self._run_ts_cr = cocotb.fork(self._run_ts())
+                self._run_ts_cr = cocotb.start_soon(self._run_ts())
 
     async def _run(self):
         frame = None
@@ -322,8 +322,10 @@ class EthMacTx(Reset):
             await Timer(self.time_scale*self.ifg*8//self.speed, 'step')
 
     async def _run_ts(self):
+        clock_edge_event = RisingEdge(self.clock)
+
         while True:
-            await RisingEdge(self.clock)
+            await clock_edge_event
             self.ptp_ts_valid.value = 0
 
             if not self.ts_queue.empty():
@@ -475,7 +477,7 @@ class EthMacRx(Reset):
         else:
             self.log.info("Reset de-asserted")
             if self._run_cr is None:
-                self._run_cr = cocotb.fork(self._run())
+                self._run_cr = cocotb.start_soon(self._run())
 
     async def _run(self):
         frame = None

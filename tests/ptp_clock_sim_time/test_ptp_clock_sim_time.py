@@ -30,7 +30,7 @@ import cocotb_test.simulator
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge
+from cocotb.triggers import RisingEdge, ClockCycles
 from cocotb.utils import get_sim_time
 
 from cocotbext.eth import PtpClockSimTime
@@ -43,7 +43,7 @@ class TB:
         self.log = logging.getLogger("cocotb.tb")
         self.log.setLevel(logging.DEBUG)
 
-        cocotb.fork(Clock(dut.clk, 6.4, units="ns").start())
+        cocotb.start_soon(Clock(dut.clk, 6.4, units="ns").start())
 
         self.ptp_clock = PtpClockSimTime(
             ts_96=dut.ts_96,
@@ -66,8 +66,7 @@ async def run_test(dut):
     start_ts_96 = (dut.ts_96.value.integer >> 48) + ((dut.ts_96.value.integer & 0xffffffffffff)/2**16*1e-9)
     start_ts_64 = dut.ts_64.value.integer/2**16*1e-9
 
-    for k in range(10000):
-        await RisingEdge(dut.clk)
+    await ClockCycles(dut.clk, 10000)
 
     stop_time = get_sim_time('sec')
     stop_ts_96 = (dut.ts_96.value.integer >> 48) + ((dut.ts_96.value.integer & 0xffffffffffff)/2**16*1e-9)
