@@ -25,6 +25,7 @@ THE SOFTWARE.
 
 import logging
 import os
+from decimal import Decimal
 
 import cocotb_test.simulator
 
@@ -46,11 +47,19 @@ class TB:
         cocotb.start_soon(Clock(dut.clk, 6.4, units="ns").start())
 
         self.ptp_clock = PtpClockSimTime(
-            ts_96=dut.ts_96,
-            ts_64=dut.ts_64,
+            ts_tod=dut.ts_tod,
+            ts_rel=dut.ts_rel,
             pps=dut.pps,
             clock=dut.clk
         )
+
+    def get_ts_tod_ns(self):
+        ts = self.dut.ts_tod.value.integer
+        return Decimal(ts >> 48).scaleb(9) + (Decimal(ts & 0xffffffffffff) / Decimal(2**16))
+
+    def get_ts_rel_ns(self):
+        ts = self.dut.ts_rel.value.integer
+        return Decimal(ts) / Decimal(2**16)
 
 
 @cocotb.test()
@@ -62,31 +71,32 @@ async def run_test(dut):
     await RisingEdge(dut.clk)
 
     await RisingEdge(dut.clk)
-    start_time = get_sim_time('sec')
-    start_ts_96 = (dut.ts_96.value.integer >> 48) + ((dut.ts_96.value.integer & 0xffffffffffff)/2**16*1e-9)
-    start_ts_64 = dut.ts_64.value.integer/2**16*1e-9
+    start_time = Decimal(get_sim_time('fs')).scaleb(-6)
+    start_ts_tod = tb.get_ts_tod_ns()
+    start_ts_rel = tb.get_ts_rel_ns()
 
     await ClockCycles(dut.clk, 10000)
 
-    stop_time = get_sim_time('sec')
-    stop_ts_96 = (dut.ts_96.value.integer >> 48) + ((dut.ts_96.value.integer & 0xffffffffffff)/2**16*1e-9)
-    stop_ts_64 = dut.ts_64.value.integer/2**16*1e-9
+    stop_time = Decimal(get_sim_time('fs')).scaleb(-6)
+    stop_ts_tod = tb.get_ts_tod_ns()
+    stop_ts_rel = tb.get_ts_rel_ns()
 
     time_delta = stop_time-start_time
-    ts_96_delta = stop_ts_96-start_ts_96
-    ts_64_delta = stop_ts_64-start_ts_64
+    ts_tod_delta = stop_ts_tod-start_ts_tod
+    ts_rel_delta = stop_ts_rel-start_ts_rel
 
-    ts_96_diff = time_delta - ts_96_delta
-    ts_64_diff = time_delta - ts_64_delta
+    tb.log.info("sim time delta : %s ns", time_delta)
+    tb.log.info("ToD ts delta   : %s ns", ts_tod_delta)
+    tb.log.info("rel ts delta   : %s ns", ts_rel_delta)
 
-    tb.log.info("sim time delta  : %g s", time_delta)
-    tb.log.info("96 bit ts delta : %g s", ts_96_delta)
-    tb.log.info("64 bit ts delta : %g s", ts_64_delta)
-    tb.log.info("96 bit ts diff  : %g s", ts_96_diff)
-    tb.log.info("64 bit ts diff  : %g s", ts_64_diff)
+    ts_tod_diff = time_delta - ts_tod_delta
+    ts_rel_diff = time_delta - ts_rel_delta
 
-    assert abs(ts_96_diff) < 1e-12
-    assert abs(ts_64_diff) < 1e-12
+    tb.log.info("ToD ts diff    : %s ns", ts_tod_diff)
+    tb.log.info("rel ts diff    : %s ns", ts_rel_diff)
+
+    assert abs(ts_tod_diff) < 1e-3
+    assert abs(ts_rel_diff) < 1e-3
 
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)

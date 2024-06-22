@@ -23,7 +23,7 @@ THE SOFTWARE.
 """
 
 import logging
-import math
+from decimal import Decimal, Context
 from fractions import Fraction
 
 import cocotb
@@ -38,8 +38,8 @@ class PtpClock(Reset):
 
     def __init__(
             self,
-            ts_96=None,
-            ts_64=None,
+            ts_tod=None,
+            ts_rel=None,
             ts_step=None,
             pps=None,
             clock=None,
@@ -49,19 +49,12 @@ class PtpClock(Reset):
             *args, **kwargs):
 
         self.log = logging.getLogger(f"cocotb.eth.{type(self).__name__}")
-        self.ts_96 = ts_96
-        self.ts_64 = ts_64
+        self.ts_tod = ts_tod
+        self.ts_rel = ts_rel
         self.ts_step = ts_step
         self.pps = pps
         self.clock = clock
         self.reset = reset
-
-        self.period_ns = 0
-        self.period_fns = 0
-        self.drift_ns = 0
-        self.drift_fns = 0
-        self.drift_rate = 0
-        self.set_period_ns(period_ns)
 
         self.log.info("PTP clock")
         self.log.info("cocotbext-eth version %s", __version__)
@@ -70,21 +63,28 @@ class PtpClock(Reset):
 
         super().__init__(*args, **kwargs)
 
-        self.ts_96_s = 0
-        self.ts_96_ns = 0
-        self.ts_96_fns = 0
+        self.ctx = Context(prec=60)
 
-        self.ts_64_ns = 0
-        self.ts_64_fns = 0
+        self.period_ns = 0
+        self.period_fns = 0
+        self.drift_num = 0
+        self.drift_denom = 0
+        self.drift_cnt = 0
+        self.set_period_ns(period_ns)
+
+        self.ts_tod_s = 0
+        self.ts_tod_ns = 0
+        self.ts_tod_fns = 0
+
+        self.ts_rel_ns = 0
+        self.ts_rel_fns = 0
 
         self.ts_updated = False
 
-        self.drift_cnt = 0
-
-        if self.ts_96 is not None:
-            self.ts_96.setimmediatevalue(0)
-        if self.ts_64 is not None:
-            self.ts_64.setimmediatevalue(0)
+        if self.ts_tod is not None:
+            self.ts_tod.setimmediatevalue(0)
+        if self.ts_rel is not None:
+            self.ts_rel.setimmediatevalue(0)
         if self.ts_step is not None:
             self.ts_step.setimmediatevalue(0)
         if self.pps is not None:
@@ -96,90 +96,104 @@ class PtpClock(Reset):
 
     def set_period(self, ns, fns):
         self.period_ns = int(ns)
-        self.period_fns = int(fns) & 0xffff
+        self.period_fns = int(fns) & 0xffffffff
 
-    def set_drift(self, ns, fns, rate):
-        self.drift_ns = int(ns)
-        self.drift_fns = int(fns) & 0xffff
-        self.drift_rate = int(rate)
+    def set_drift(self, num, denom):
+        self.drift_num = int(num)
+        self.drift_denom = int(denom)
 
     def set_period_ns(self, t):
-        drift, period = math.modf(t*2**16)
+        t = Decimal(t)
+        period, drift = self.ctx.divmod(Decimal(t) * Decimal(2**32), Decimal(1))
         period = int(period)
-        frac = Fraction(drift).limit_denominator(2**16)
-        drift = frac.numerator
-        rate = frac.denominator
-        self.period_ns = period >> 16
-        self.period_fns = period & 0xffff
-        self.drift_ns = drift >> 16
-        self.drift_fns = drift & 0xffff
-        self.drift_rate = rate
+        frac = Fraction(drift).limit_denominator(2**16-1)
+        self.set_period(period >> 32, period & 0xffffffff)
+        self.set_drift(frac.numerator, frac.denominator)
+
+        self.log.info("Set period: %s ns", t)
+        self.log.info("Period: 0x%x ns 0x%08x fns", self.period_ns, self.period_fns)
+        self.log.info("Drift: 0x%04x / 0x%04x fns", self.drift_num, self.drift_denom)
 
     def get_period_ns(self):
-        p = ((self.period_ns << 16) | self.period_fns) / 2**16
-        if self.drift_rate:
-            return p + ((self.drift_ns << 16) | self.drift_fns) / self.drift_rate / 2**16
-        return p
+        p = Decimal((self.period_ns << 32) | self.period_fns)
+        if self.drift_denom:
+            p += Decimal(self.drift_num) / Decimal(self.drift_denom)
+        return p / Decimal(2**32)
 
-    def set_ts_96(self, ts_s, ts_ns=None, ts_fns=None):
-        ts_s = int(ts_s)
-        if ts_fns is not None:
-            # got separate fields
-            self.ts_96_s = ts_s
-            self.ts_96_ns = int(ts_ns)
-            self.ts_96_fns = int(ts_fns)
-        else:
-            # got timestamp as integer
-            self.ts_96_s = ts_s >> 48
-            self.ts_96_ns = (ts_s >> 16) & 0x3fffffff
-            self.ts_96_fns = ts_s & 0xffff
+    def set_ts_tod(self, ts_s, ts_ns, ts_fns):
+        self.ts_tod_s = int(ts_s)
+        self.ts_tod_ns = int(ts_ns)
+        self.ts_tod_fns = int(ts_fns)
         self.ts_updated = True
 
-    def set_ts_96_ns(self, t):
-        self.set_ts_96_s(t*1e-9)
+    def set_ts_tod_96(self, ts):
+        ts = int(ts)
+        self.set_ts_tod(ts >> 48, (ts >> 32) & 0x3fffffff, (ts & 0xffff) << 16)
 
-    def set_ts_96_s(self, t):
-        ts_ns, ts_s = math.modf(t)
-        ts_ns *= 1e9
-        ts_fns, ts_ns = math.modf(ts_ns)
-        ts_fns *= 2**16
-        self.set_ts_96(ts_s, ts_ns, ts_fns)
+    def set_ts_tod_ns(self, t):
+        ts_s, ts_ns = self.ctx.divmod(Decimal(t), Decimal(1000000000))
+        ts_s = ts_s.scaleb(-9).to_integral_value()
+        ts_ns, ts_fns = self.ctx.divmod(ts_ns, Decimal(1))
+        ts_ns = ts_ns.to_integral_value()
+        ts_fns = (ts_fns * Decimal(2**32)).to_integral_value()
+        self.set_ts_tod(ts_s, ts_ns, ts_fns)
 
-    def get_ts_96(self):
-        return (self.ts_96_s << 48) | (self.ts_96_ns << 16) | self.ts_96_fns
+    def set_ts_tod_s(self, t):
+        self.set_ts_tod_ns(Decimal(t).scaleb(9, self.ctx))
 
-    def get_ts_96_ns(self):
-        return self.ts_96_s*1e9+self.ts_96_ns+self.ts_96_fns/2**16
+    def set_ts_tod_sim_time(self):
+        self.set_ts_tod_ns(Decimal(get_sim_time('fs')).scaleb(-6))
 
-    def get_ts_96_s(self):
-        return self.get_ts_96_ns()*1e-9
+    def get_ts_tod(self):
+        return (self.ts_tod_s, self.ts_tod_ns, self.ts_tod_fns)
 
-    def set_ts_64(self, ts_ns, ts_fns=None):
-        ts_ns = int(ts_ns)
-        if ts_fns is not None:
-            # got separate fields
-            self.ts_64_ns = ts_ns
-            self.ts_64_fns = int(ts_fns)
-        else:
-            # got timestamp as integer
-            self.ts_64_ns = ts_ns >> 16
-            self.ts_64_fns = ts_ns & 0xffff
+    def get_ts_tod_96(self):
+        ts_s, ts_ns, ts_fns = self.get_ts_tod()
+        return (ts_s << 48) | (ts_ns << 16) | (ts_fns >> 16)
+
+    def get_ts_tod_ns(self):
+        ts_s, ts_ns, ts_fns = self.get_ts_tod()
+        ns = Decimal(ts_fns) / Decimal(2**32)
+        ns = self.ctx.add(ns, Decimal(ts_ns))
+        return self.ctx.add(ns, Decimal(ts_s).scaleb(9))
+
+    def get_ts_tod_s(self):
+        return self.get_ts_tod_ns().scaleb(-9, self.ctx)
+
+    def set_ts_rel(self, ts_ns, ts_fns):
+        self.ts_rel_ns = int(ts_ns)
+        self.ts_rel_fns = int(ts_fns)
         self.ts_updated = True
 
-    def set_ts_64_ns(self, t):
-        self.set_ts_64(t*2**16)
+    def set_ts_rel_64(self, ts):
+        ts = int(ts)
+        self.set_ts_rel(ts >> 16, (ts & 0xffff) << 16)
 
-    def set_ts_64_s(self, t):
-        self.set_ts_64_ns(t*1e9)
+    def set_ts_rel_ns(self, t):
+        ts_ns, ts_fns = self.ctx.divmod(Decimal(t), Decimal(1))
+        ts_ns = ts_ns.to_integral_value()
+        ts_fns = (ts_fns * Decimal(2**32)).to_integral_value()
+        self.set_ts_rel(ts_ns, ts_fns)
 
-    def get_ts_64(self):
-        return (self.ts_64_ns << 16) | self.ts_64_fns
+    def set_ts_rel_s(self, t):
+        self.set_ts_rel_ns(Decimal(t).scaleb(9, self.ctx))
 
-    def get_ts_64_ns(self):
-        return self.get_ts_64()/2**16
+    def set_ts_rel_sim_time(self):
+        self.set_ts_rel_ns(Decimal(get_sim_time('fs')).scaleb(-6))
 
-    def get_ts_64_s(self):
-        return self.get_ts_64()*1e-9
+    def get_ts_rel(self):
+        return (self.ts_rel_ns, self.ts_rel_fns)
+
+    def get_ts_rel_64(self):
+        ts_ns, ts_fns = self.get_ts_rel()
+        return (ts_ns << 16) | (ts_fns >> 16)
+
+    def get_ts_rel_ns(self):
+        ts_ns, ts_fns = self.get_ts_rel()
+        return self.ctx.add(Decimal(ts_fns) / Decimal(2**32), Decimal(ts_ns))
+
+    def get_ts_rel_s(self):
+        return self.get_ts_rel_ns().scaleb(-9, self.ctx)
 
     def _handle_reset(self, state):
         if state:
@@ -188,16 +202,16 @@ class PtpClock(Reset):
                 self._run_cr.kill()
                 self._run_cr = None
 
-            self.ts_96_s = 0
-            self.ts_96_ns = 0
-            self.ts_96_fns = 0
-            self.ts_64_ns = 0
-            self.ts_64_fns = 0
+            self.ts_tod_s = 0
+            self.ts_tod_ns = 0
+            self.ts_tod_fns = 0
+            self.ts_rel_ns = 0
+            self.ts_rel_fns = 0
             self.drift_cnt = 0
-            if self.ts_96 is not None:
-                self.ts_96.value = 0
-            if self.ts_64 is not None:
-                self.ts_64.value = 0
+            if self.ts_tod is not None:
+                self.ts_tod.value = 0
+            if self.ts_rel is not None:
+                self.ts_rel.value = 0
             if self.ts_step is not None:
                 self.ts_step.value = 0
             if self.pps is not None:
@@ -220,50 +234,53 @@ class PtpClock(Reset):
             if self.pps is not None:
                 self.pps.value = 0
 
-            # increment 96 bit timestamp
-            if self.ts_96 is not None or self.pps is not None:
-                t = ((self.ts_96_ns << 16) + self.ts_96_fns) + ((self.period_ns << 16) + self.period_fns)
+            # increment tod bit timestamp
+            self.ts_tod_fns += (self.period_ns << 32) + self.period_fns
 
-                if self.drift_rate and self.drift_cnt == 0:
-                    t += (self.drift_ns << 16) + self.drift_fns
+            if self.drift_denom and self.drift_cnt == 0:
+                self.ts_tod_fns += self.drift_num
 
-                if t > (1000000000 << 16):
-                    self.ts_96_s += 1
-                    t -= (1000000000 << 16)
-                    if self.pps is not None:
-                        self.pps.value = 1
+            ns_inc = self.ts_tod_fns >> 32
+            self.ts_tod_fns &= 0xffffffff
 
-                self.ts_96_fns = t & 0xffff
-                self.ts_96_ns = t >> 16
+            self.ts_tod_ns += ns_inc
 
-                if self.ts_96 is not None:
-                    self.ts_96.value = (self.ts_96_s << 48) | (self.ts_96_ns << 16) | (self.ts_96_fns)
+            if self.ts_tod_ns >= 1000000000:
+                self.ts_tod_s += 1
+                self.ts_tod_ns -= 1000000000
+                if self.pps is not None:
+                    self.pps.value = 1
 
-            # increment 64 bit timestamp
-            if self.ts_64 is not None:
-                t = ((self.ts_64_ns << 16) + self.ts_64_fns) + ((self.period_ns << 16) + self.period_fns)
+            if self.ts_tod is not None:
+                self.ts_tod.value = (self.ts_tod_s << 48) | (self.ts_tod_ns << 16) | (self.ts_tod_fns >> 16)
 
-                if self.drift_rate and self.drift_cnt == 0:
-                    t += ((self.drift_ns << 16) + self.drift_fns)
+            # increment rel bit timestamp
+            self.ts_rel_fns += (self.period_ns << 32) + self.period_fns
 
-                self.ts_64_fns = t & 0xffff
-                self.ts_64_ns = t >> 16
+            if self.drift_denom and self.drift_cnt == 0:
+                self.ts_rel_fns += self.drift_num
 
-                self.ts_64.value = (self.ts_64_ns << 16) | self.ts_64_fns
+            ns_inc = self.ts_rel_fns >> 32
+            self.ts_rel_fns &= 0xffffffff
 
-            if self.drift_rate:
+            self.ts_rel_ns = (self.ts_rel_ns + ns_inc) & 0xffffffffffff
+
+            if self.ts_rel is not None:
+                self.ts_rel.value = (self.ts_rel_ns << 16) | (self.ts_rel_fns >> 16)
+
+            if self.drift_denom:
                 if self.drift_cnt > 0:
                     self.drift_cnt -= 1
                 else:
-                    self.drift_cnt = self.drift_rate-1
+                    self.drift_cnt = self.drift_denom-1
 
 
 class PtpClockSimTime:
 
-    def __init__(self, ts_96=None, ts_64=None, pps=None, clock=None, *args, **kwargs):
+    def __init__(self, ts_tod=None, ts_rel=None, pps=None, clock=None, *args, **kwargs):
         self.log = logging.getLogger(f"cocotb.eth.{type(self).__name__}")
-        self.ts_96 = ts_96
-        self.ts_64 = ts_64
+        self.ts_tod = ts_tod
+        self.ts_rel = ts_rel
         self.pps = pps
         self.clock = clock
 
@@ -274,41 +291,55 @@ class PtpClockSimTime:
 
         super().__init__(*args, **kwargs)
 
-        self.ts_96_s = 0
-        self.ts_96_ns = 0
-        self.ts_96_fns = 0
+        self.ctx = Context(prec=60)
 
-        self.ts_64_ns = 0
-        self.ts_64_fns = 0
+        self.ts_tod_s = 0
+        self.ts_tod_ns = 0
+        self.ts_tod_fns = 0
 
-        self.last_ts_96_s = 0
+        self.ts_rel_ns = 0
+        self.ts_rel_fns = 0
 
-        if self.ts_96 is not None:
-            self.ts_96.setimmediatevalue(0)
-        if self.ts_64 is not None:
-            self.ts_64.setimmediatevalue(0)
+        self.last_ts_tod_s = 0
+
+        if self.ts_tod is not None:
+            self.ts_tod.setimmediatevalue(0)
+        if self.ts_rel is not None:
+            self.ts_rel.setimmediatevalue(0)
         if self.pps is not None:
             self.pps.value = 0
 
         self._run_cr = cocotb.start_soon(self._run())
 
-    def get_ts_96(self):
-        return (self.ts_96_s << 48) | (self.ts_96_ns << 16) | self.ts_96_fns
+    def get_ts_tod(self):
+        return (self.ts_tod_s, self.ts_tod_ns, self.ts_tod_fns)
 
-    def get_ts_96_ns(self):
-        return self.ts_96_s*1e9+self.ts_96_ns+self.ts_96_fns/2**16
+    def get_ts_tod_96(self):
+        ts_s, ts_ns, ts_fns = self.get_ts_tod()
+        return (ts_s << 48) | (ts_ns << 16) | (ts_fns >> 16)
 
-    def get_ts_96_s(self):
-        return self.get_ts_96_ns()*1e-9
+    def get_ts_tod_ns(self):
+        ts_s, ts_ns, ts_fns = self.get_ts_tod()
+        ns = Decimal(ts_fns) / Decimal(2**32)
+        ns = self.ctx.add(ns, Decimal(ts_ns))
+        return self.ctx.add(ns, Decimal(ts_s).scaleb(9))
 
-    def get_ts_64(self):
-        return (self.ts_64_ns << 16) | self.ts_64_fns
+    def get_ts_tod_s(self):
+        return self.get_ts_tod_ns().scaleb(-9, self.ctx)
 
-    def get_ts_64_ns(self):
-        return self.get_ts_64()/2**16
+    def get_ts_rel(self):
+        return (self.ts_rel_ns, self.ts_rel_fns)
 
-    def get_ts_64_s(self):
-        return self.get_ts_64()*1e-9
+    def get_ts_rel_64(self):
+        ts_ns, ts_fns = self.get_ts_rel()
+        return (ts_ns << 16) | (ts_fns >> 16)
+
+    def get_ts_rel_ns(self):
+        ts_ns, ts_fns = self.get_ts_rel()
+        return self.ctx.add(Decimal(ts_fns) / Decimal(2**32), Decimal(ts_ns))
+
+    def get_ts_rel_s(self):
+        return self.get_ts_rel_ns().scaleb(-9, self.ctx)
 
     async def _run(self):
         clock_edge_event = RisingEdge(self.clock)
@@ -316,21 +347,24 @@ class PtpClockSimTime:
         while True:
             await clock_edge_event
 
-            self.ts_64_fns, self.ts_64_ns = math.modf(get_sim_time('ns'))
+            ts_ns, ts_fns = self.ctx.divmod(Decimal(get_sim_time('fs')).scaleb(-6), Decimal(1))
 
-            self.ts_64_ns = int(self.ts_64_ns)
-            self.ts_64_fns = int(self.ts_64_fns*0x10000)
+            self.ts_rel_ns = int(ts_ns.to_integral_value()) & 0xffffffffffff
+            self.ts_rel_fns = int((ts_fns * Decimal(2**16)).to_integral_value())
 
-            self.ts_96_s, self.ts_96_ns = divmod(self.ts_64_ns, 1000000000)
-            self.ts_96_fns = self.ts_64_fns
+            ts_s, ts_ns = self.ctx.divmod(ts_ns, Decimal(1000000000))
 
-            if self.ts_96 is not None:
-                self.ts_96.value = (self.ts_96_s << 48) | (self.ts_96_ns << 16) | self.ts_96_fns
+            self.ts_tod_s = int(ts_s.scaleb(-9).to_integral_value())
+            self.ts_tod_ns = int(ts_ns.to_integral_value())
+            self.ts_tod_fns = self.ts_rel_fns
 
-            if self.ts_64 is not None:
-                self.ts_64.value = (self.ts_64_ns << 16) | self.ts_64_fns
+            if self.ts_tod is not None:
+                self.ts_tod.value = (self.ts_tod_s << 48) | (self.ts_tod_ns << 16) | self.ts_tod_fns
+
+            if self.ts_rel is not None:
+                self.ts_rel.value = (self.ts_rel_ns << 16) | self.ts_rel_fns
 
             if self.pps is not None:
-                self.pps.value = int(self.last_ts_96_s != self.ts_96_s)
+                self.pps.value = int(self.last_ts_tod_s != self.ts_tod_s)
 
-            self.last_ts_96_s = self.ts_96_s
+            self.last_ts_tod_s = self.ts_tod_s
